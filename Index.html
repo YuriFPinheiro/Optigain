@@ -1,0 +1,146 @@
+<script>
+(() => {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const master = ctx.createGain(); master.gain.value = 0.0; master.connect(ctx.destination);
+  const comp = ctx.createDynamicsCompressor(); comp.connect(master);
+
+  // ---------- reverb curto ----------
+  const conv = ctx.createConvolver();
+  const len = ctx.sampleRate * 1.8;
+  const ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const d = ir.getChannelData(c);
+    for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 2.4);
+  }
+  conv.buffer = ir;
+  const wet = ctx.createGain(); wet.gain.value = 0.26;
+  conv.connect(wet); wet.connect(comp);
+  const dry = ctx.createGain(); dry.gain.value = 0.85; dry.connect(comp);
+
+  // ---------- vibrato ----------
+  const lfo = ctx.createOscillator(); lfo.frequency.value = 5.0;
+  const lfoGain = ctx.createGain(); lfoGain.gain.value = 0;
+  lfo.connect(lfoGain); lfo.start();
+
+  // ---------- notas ----------
+  function playNote(freq, when = ctx.currentTime, dur = 1.6, timbre = 'reed', gain = 0.18) {
+    const g = ctx.createGain();
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.value = timbre === 'reed' ? 2000 : timbre === 'organ' ? 5000 : 1300;
+    filt.Q.value = timbre === 'reed' ? 3 : 0.7;
+
+    const oscs = [];
+    if (timbre === 'organ') {
+      [[1,1],[2,0.5],[3,0.28],[4,0.15]].forEach(([m,a]) => {
+        const o = ctx.createOscillator(); o.type='sine'; o.frequency.value = freq*m;
+        const og = ctx.createGain(); og.gain.value = a; o.connect(og); og.connect(filt); oscs.push(o);
+      });
+    } else if (timbre === 'strings') {
+      [[1,'sawtooth',0.5],[1.004,'sawtooth',0.4],[0.996,'sawtooth',0.35]].forEach(([m,t,a]) => {
+        const o = ctx.createOscillator(); o.type=t; o.frequency.value = freq*m;
+        const og = ctx.createGain(); og.gain.value = a; o.connect(og); og.connect(filt); oscs.push(o);
+      });
+    } else {
+      const o = ctx.createOscillator(); o.type='square'; o.frequency.value = freq;
+      const o2 = ctx.createOscillator(); o2.type='triangle'; o2.frequency.value = freq*1.002;
+      const g2 = ctx.createGain(); g2.gain.value = .7;
+      o.connect(filt); o2.connect(g2); g2.connect(filt); oscs.push(o,o2);
+    }
+
+    oscs.forEach(o => lfoGain.connect(o.frequency));
+    filt.connect(g); g.connect(dry); g.connect(conv);
+
+    const t = when;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.025);
+    g.gain.exponentialRampToValueAtTime(gain*0.5, t + 0.22);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    oscs.forEach(o => { o.start(t); o.stop(t + dur + 0.05); });
+  }
+
+  // ---------- disco rítmico ----------
+  // 16 passos = 1 compasso de 4/4 em semicolcheias
+  const styles = {
+    'Bossa': {
+      kick:  [0, 6, 8, 14],
+      rim:   [4, 12],
+      hat:   [0,2,4,6,8,10,12,14],
+      shaker:[1,3,5,7,9,11,13,15],
+      bass:  [0, 3, 6, 8, 11, 14]
+    },
+    'Bossa lenta': {
+      kick:  [0, 8, 14],
+      rim:   [4, 12],
+      hat:   [0,2,4,6,8,10,12,14],
+      shaker:[3,7,11,15],
+      bass:  [0, 6, 8, 14]
+    },
+    'Balada': {
+      kick: [0,8], rim:[4,12], hat:[2,6,10,14], shaker:[], bass:[0,8]
+    },
+    'Sem disco': { kick:[], rim:[], hat:[], shaker:[], bass:[] }
+  };
+
+  let style = 'Bossa', tempo = 96, playing = false, step = 0, nextTime = 0, timer = null;
+
+  function noiseBurst(when, dur, gainVal, hp, bp) {
+    const b = ctx.createBuffer(1, Math.max(1, ctx.sampleRate*dur|0), ctx.sampleRate);
+    const d = b.getChannelData(0);
+    for (let i=0;i<d.length;i++) d[i] = (Math.random()*2-1) * (1 - i/d.length);
+    const s = ctx.createBufferSource(); s.buffer = b;
+    const f = ctx.createBiquadFilter(); f.type = bp ? 'bandpass' : 'highpass';
+    f.frequency.value = hp; if (bp) f.Q.value = 1.2;
+    const g = ctx.createGain(); g.gain.value = gainVal;
+    s.connect(f); f.connect(g); g.connect(dry); g.connect(conv);
+    s.start(when);
+  }
+  function kick(when) {
+    const o = ctx.createOscillator(); o.type='sine';
+    const g = ctx.createGain();
+    o.frequency.setValueAtTime(110, when);
+    o.frequency.exponentialRampToValueAtTime(48, when+0.11);
+    g.gain.setValueAtTime(0.42, when);
+    g.gain.exponentialRampToValueAtTime(0.001, when+0.2);
+    o.connect(g); g.connect(dry); o.start(when); o.stop(when+0.24);
+  }
+  function bassNote(when, freq, dur = 0.34) {
+    const o = ctx.createOscillator(); o.type='triangle'; o.frequency.value = freq;
+    const f = ctx.createBiquadFilter(); f.type='lowpass'; f.frequency.value = 700;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(0.2, when+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, when+dur);
+    o.connect(f); f.connect(g); g.connect(dry); o.start(when); o.stop(when+dur+0.05);
+  }
+
+  // progressão de bossa: Am7 – D7 – Gm7 – C7 (em ciclo de 2 compassos)
+  const bassLine = [110, 110*1.335, 98, 98*1.335]; // A2, D3, G2, C3
+  let bar = 0;
+
+  function schedule() {
+    const spb = 60 / tempo / 4;
+    while (nextTime < ctx.currentTime + 0.2) {
+      const p = styles[style];
+      if (p.kick.includes(step)) kick(nextTime);
+      if (p.rim.includes(step)) noiseBurst(nextTime, 0.09, 0.14, 900, true);   // cruzada
+      if (p.hat.includes(step)) noiseBurst(nextTime, 0.05, 0.05, 6500);
+      if (p.shaker.includes(step)) noiseBurst(nextTime, 0.07, 0.035, 4200, true); // ganzá
+      if (p.bass.includes(step)) {
+        const root = bassLine[bar % bassLine.length];
+        bassNote(nextTime, step === 0 ? root : root * 1.5);
+      }
+      step = (step + 1) % 16;
+      if (step === 0) bar++;
+      nextTime += spb;
+    }
+    timer = setTimeout(schedule, 60);
+  }
+
+  // ---------- teclado ----------
+  const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const isBlack = n => n.includes('#');
+  const freqOf = midi => 440 * Math.pow(2, (midi - 69) / 12);
+
+  cons
